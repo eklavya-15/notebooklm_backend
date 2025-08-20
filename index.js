@@ -7,11 +7,18 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { QdrantVectorStore } from "@langchain/qdrant";
 import { CheerioWebBaseLoader } from "@langchain/community/document_loaders/web/cheerio";
 import OpenAI from 'openai';
+import { QdrantClient } from '@qdrant/js-client-rest';
 import cors from "cors";
 import 'dotenv/config';
 
 const app = express();
 const client = new OpenAI();
+
+// Initialize Qdrant client
+const qdrantClient = new QdrantClient({
+  url: (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', ''),
+  apiKey: process.env.QDRANT_API_KEY,
+});
 
 // Global variable to store all sources context
 let globalSourcesContext = [];
@@ -58,17 +65,30 @@ async function createAndStoreEmbeddings(text, metadata) {
   }];
 
   // Use environment variable with fallback
-  const qdrantUrl = process.env.DOCKER_URL || "http://localhost:6333";
+  const qdrantUrl = (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '');
   console.log("Using Qdrant URL:", qdrantUrl);
 
-  await QdrantVectorStore.fromDocuments(docs, embeddings, {
-    url: qdrantUrl,
-    collectionName: "personal-notebooklm",
-  });
-  console.log("Documents stored in Qdrant");
+  try {
+    // Test connection to Qdrant first
+    const collections = await qdrantClient.getCollections();
+    console.log("Qdrant connection test successful, collections:", collections.collections.length);
 
-  // Update global context with new source
-  updateGlobalContext(metadata, text);
+    await QdrantVectorStore.fromDocuments(docs, embeddings, {
+      url: qdrantUrl,
+      collectionName: "personal-notebooklm",
+      apiKey: process.env.QDRANT_API_KEY,
+    });
+    console.log("Documents stored in Qdrant");
+
+    // Update global context with new source
+    updateGlobalContext(metadata, text);
+  } catch (error) {
+    console.error("Qdrant connection error:", error);
+    if (error.message.includes("fetch failed") || error.message.includes("ENOTFOUND")) {
+      throw new Error(`Cannot connect to Qdrant at ${qdrantUrl}. Please check if the database is running and accessible.`);
+    }
+    throw error;
+  }
 }
 
 // Function to update global context when new sources are added
@@ -122,12 +142,13 @@ async function chat(userInput) {
       model: 'text-embedding-3-large',
     });
 
-    const qdrantUrl = process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333";
+    const qdrantUrl = (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '');
     const vectorStore = await QdrantVectorStore.fromExistingCollection(
       embeddings,
       {
         url: qdrantUrl,
         collectionName: 'personal-notebooklm',
+        apiKey: process.env.QDRANT_API_KEY,
       }
     );
 
@@ -175,10 +196,11 @@ app.get("/test-chat", async (req, res) => {
 
     // Initialize embeddings and vector store
     const embeddings = new OpenAIEmbeddings({ model: "text-embedding-3-large" });
-    const qdrantUrl = process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333";
+    const qdrantUrl = (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '');
     const vectorStore = await QdrantVectorStore.fromExistingIndex(embeddings, {
       url: qdrantUrl,
       collectionName: "personal-notebooklm",
+      apiKey: process.env.QDRANT_API_KEY,
     });
 
     // Check if there are any documents in the collection
@@ -195,6 +217,30 @@ app.get("/test-chat", async (req, res) => {
   } catch (err) {
     console.error("Error in chat test:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Test Qdrant connection
+app.get("/test-qdrant", async (req, res) => {
+  try {
+    const qdrantUrl = (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '');
+    console.log("Testing Qdrant connection to:", qdrantUrl);
+    
+    const collections = await qdrantClient.getCollections();
+    
+    res.json({ 
+      message: "Qdrant connection successful",
+      url: qdrantUrl,
+      collections: collections.collections,
+      totalCollections: collections.collections.length
+    });
+  } catch (error) {
+    console.error("Qdrant connection test error:", error);
+    res.status(500).json({ 
+      error: "Qdrant connection test failed",
+      message: error.message,
+      url: (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '')
+    });
   }
 });
 
@@ -216,30 +262,24 @@ app.post("/api/embed-pdf", upload.single("pdf"), async (req, res) => {
     }
 
     console.log("File received:", req.file.originalname);
-    console.log("File path:", req.file.path);
-    console.log("File size:", req.file.size);
-
-    // Check if OpenAI API key is set
-    if (!process.env.OPENAI_API_KEY) {
-      console.error("OPENAI_API_KEY not set");
-      return res.status(500).json({ error: "OpenAI API key not configured" });
-    }
-
-    // Check if Qdrant URL is accessible
-    const qdrantUrl = process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333";
-    console.log("Attempting to connect to Qdrant at:", qdrantUrl);
 
     // Load PDF
     const loader = new PDFLoader(req.file.path);
     const docs = await loader.load();
     console.log("PDF loaded, pages:", docs.length);
 
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY environment variable is not set");
+    }
+
     const embeddings = new OpenAIEmbeddings({ model: "text-embedding-3-large" });
     console.log("Embeddings created");
 
+    const qdrantUrl = (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '');
     await QdrantVectorStore.fromDocuments(docs, embeddings, {
       url: qdrantUrl,
       collectionName: "personal-notebooklm",
+      apiKey: process.env.QDRANT_API_KEY,
     });
     console.log("Documents stored in Qdrant");
 
@@ -251,31 +291,13 @@ app.post("/api/embed-pdf", upload.single("pdf"), async (req, res) => {
       timestamp: new Date().toISOString()
     }, pdfContent);
 
-    // Clean up temp file
-    if (!isServerless) {
-      fs.unlinkSync(req.file.path);
-      console.log("Temp file deleted");
-    }
+    fs.unlinkSync(req.file.path);
+    console.log("Temp file deleted");
 
     res.status(200).json({ message: "PDF embedded successfully!" });
   } catch (err) {
     console.error("Error processing PDF:", err);
-    console.error("Error stack:", err.stack);
-    
-    // Provide more specific error messages
-    let errorMessage = err.message;
-    if (err.message.includes("ENOENT")) {
-      errorMessage = "File processing failed - file not found";
-    } else if (err.message.includes("Qdrant")) {
-      errorMessage = "Vector database connection failed";
-    } else if (err.message.includes("OpenAI")) {
-      errorMessage = "OpenAI API error";
-    }
-    
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
