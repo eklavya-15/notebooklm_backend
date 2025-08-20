@@ -37,7 +37,7 @@ if (!isServerless) {
 const upload = multer({ dest: uploadsDir || '/tmp' }); 
 
 app.use(cors({
-  origin: [process.env.CLIENT_URL, "http://localhost:8080"], 
+  origin: true, // Allow all origins for testing
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true,
