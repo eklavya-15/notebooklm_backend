@@ -23,6 +23,10 @@ const qdrantClient = new QdrantClient({
 // Global variable to store all sources context
 let globalSourcesContext = [];
 
+// Clear context on server restart (for development/testing)
+console.log("Server starting - clearing previous context");
+globalSourcesContext = [];
+
 // Check if we're in a serverless environment (like Vercel)
 const isServerless = process.env.VERCEL || process.env.NODE_ENV === 'production';
 
@@ -94,6 +98,7 @@ async function createAndStoreEmbeddings(text, metadata) {
 // Function to update global context when new sources are added
 function updateGlobalContext(metadata, content) {
   const sourceInfo = {
+    id: `source_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     type: metadata.type,
     title: metadata.title,
     content: content.substring(0, 200) + "...", // First 200 chars
@@ -106,10 +111,12 @@ function updateGlobalContext(metadata, content) {
 
   globalSourcesContext.push(sourceInfo);
   console.log("Global context updated. Total sources:", globalSourcesContext.length);
+  console.log("Added source:", sourceInfo.title, "with ID:", sourceInfo.id);
 }
 
 // Function to generate dynamic system prompt
 function generateSystemPrompt(relevantChunks) {
+  console.log("Relevant Chunks: ", relevantChunks);
   const sourcesSummary = globalSourcesContext.map(source => 
     `- ${source.type.toUpperCase()}: ${source.title} (${source.timestamp})`
   ).join('\n');
@@ -168,7 +175,9 @@ async function chat(userInput) {
       ],
     });
 
-    // Return the response in the expected format
+    console.log("Response: ", response.choices[0].message.content);
+    
+
     return {
       text: response.choices[0].message.content,
       sourceDocuments: relevantChunk
@@ -250,6 +259,74 @@ app.get("/api/sources-context", (req, res) => {
     totalSources: globalSourcesContext.length,
     sources: globalSourcesContext
   });
+});
+
+// Clear all sources and embeddings
+app.delete("/api/sources/clear", async (req, res) => {
+  try {
+    console.log("Clearing all sources and embeddings...");
+    
+    // Clear global context
+    globalSourcesContext = [];
+    
+    // Clear Qdrant collection
+    const qdrantUrl = (process.env.DOCKER_URL || process.env.QDRANT_URL || "http://localhost:6333").replace(':6333', '');
+    
+    try {
+      // Delete the entire collection
+      await qdrantClient.deleteCollection("personal-notebooklm");
+      console.log("Qdrant collection deleted");
+      
+      // Recreate empty collection
+      await qdrantClient.createCollection("personal-notebooklm", {
+        vectors: {
+          size: 1536, // OpenAI embedding size
+          distance: "Cosine"
+        }
+      });
+      console.log("New empty collection created");
+    } catch (error) {
+      console.log("Collection might not exist yet, continuing...");
+    }
+    
+    res.json({ 
+      message: "All sources and embeddings cleared successfully",
+      totalSources: 0
+    });
+  } catch (err) {
+    console.error("Error clearing sources:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove specific source
+app.delete("/api/sources/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log("Removing source with ID:", id);
+    
+    // Find and remove from global context
+    const sourceIndex = globalSourcesContext.findIndex(source => source.id === id);
+    if (sourceIndex === -1) {
+      return res.status(404).json({ error: "Source not found" });
+    }
+    
+    const removedSource = globalSourcesContext.splice(sourceIndex, 1)[0];
+    console.log("Removed source:", removedSource.title);
+    
+    // Note: For now, we're not removing individual embeddings from Qdrant
+    // as it's complex to identify which vectors belong to which source
+    // The clear all endpoint handles complete cleanup
+    
+    res.json({ 
+      message: "Source removed successfully",
+      removedSource,
+      totalSources: globalSourcesContext.length
+    });
+  } catch (err) {
+    console.error("Error removing source:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/embed-pdf", upload.single("pdf"), async (req, res) => {
@@ -380,7 +457,7 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    console.log("Chat message:", message);
+    // console.log("Chat message:", message);
 
     // Check if OpenAI API key is set
     if (!process.env.OPENAI_API_KEY) {
@@ -388,6 +465,8 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const response = await chat(message);
+    // console.log(response);
+    
 
     if (!response || !response.text) {
       return res.status(500).json({ error: "Failed to generate chat response" });
