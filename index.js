@@ -81,6 +81,13 @@ async function createAndStoreEmbeddings(text, metadata) {
       url: qdrantUrl,
       collectionName: "personal-notebooklm",
       apiKey: process.env.QDRANT_API_KEY,
+      // Ensure collection has correct vector size
+      collectionConfig: {
+        vectors: {
+          size: 3072, // Increased vector size
+          distance: "Cosine"
+        }
+      }
     });
     console.log("Documents stored in Qdrant");
 
@@ -280,7 +287,7 @@ app.delete("/api/sources/clear", async (req, res) => {
       // Recreate empty collection
       await qdrantClient.createCollection("personal-notebooklm", {
         vectors: {
-          size: 1536, // OpenAI embedding size
+          size: 3072, // Increased from 1536 to 3072 for larger embeddings
           distance: "Cosine"
         }
       });
@@ -340,6 +347,23 @@ app.post("/api/embed-pdf", upload.single("pdf"), async (req, res) => {
 
     console.log("File received:", req.file.originalname);
 
+    // Clear previous embeddings from Qdrant (but keep UI sources)
+    try {
+      await qdrantClient.deleteCollection("personal-notebooklm");
+      console.log("Previous Qdrant collection deleted");
+      
+      // Recreate empty collection with larger vector size
+      await qdrantClient.createCollection("personal-notebooklm", {
+        vectors: {
+          size: 3072, // Increased vector size
+          distance: "Cosine"
+        }
+      });
+      console.log("New empty collection created");
+    } catch (error) {
+      console.log("Collection might not exist yet, continuing...");
+    }
+
     // Load PDF
     const loader = new PDFLoader(req.file.path);
     const docs = await loader.load();
@@ -391,6 +415,23 @@ app.post("/api/embed-text", async (req, res) => {
 
     console.log("Text received:", title, "Length:", content.length);
 
+    // Clear previous embeddings from Qdrant (but keep UI sources)
+    try {
+      await qdrantClient.deleteCollection("personal-notebooklm");
+      console.log("Previous Qdrant collection deleted");
+      
+      // Recreate empty collection with larger vector size
+      await qdrantClient.createCollection("personal-notebooklm", {
+        vectors: {
+          size: 3072, // Increased vector size
+          distance: "Cosine"
+        }
+      });
+      console.log("New empty collection created");
+    } catch (error) {
+      console.log("Collection might not exist yet, continuing...");
+    }
+
     // Create embeddings and store in Qdrant
     await createAndStoreEmbeddings(content, {
       type: "text",
@@ -418,6 +459,23 @@ app.post("/api/embed-url", async (req, res) => {
     }
 
     console.log("URL received:", title, url);
+
+    // Clear previous embeddings from Qdrant (but keep UI sources)
+    try {
+      await qdrantClient.deleteCollection("personal-notebooklm");
+      console.log("Previous Qdrant collection deleted");
+      
+      // Recreate empty collection with larger vector size
+      await qdrantClient.createCollection("personal-notebooklm", {
+        vectors: {
+          size: 3072, // Increased vector size
+          distance: "Cosine"
+        }
+      });
+      console.log("New empty collection created");
+    } catch (error) {
+      console.log("Collection might not exist yet, continuing...");
+    }
 
     // Load content from URL
     const loader = new CheerioWebBaseLoader(url);
